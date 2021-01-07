@@ -1,17 +1,24 @@
 ```{r}
-#library(data.table)
 library(randomForest)
 library(ggmap)
 library(h2o)
 library(gridExtra)
 library(dplyr)
 library(ggplot2)
-
+library(nnet)
+library(hrbrthemes)
+library(rpart.plot)
+library(mlbench)
+library(e1071)
+library(rpart)
+library(DMwR2)
+library(caret)
+library(Metrics)
+library(earth) # fit MARS models
 ```
 
 ```{r}
-
-#Programmatically download and load into your favorite analytical tool the trip data for September 2015.
+#Programmatically download and load into your favorite analytical tool the trip data for 06/2020.
 setwd('./')
 ptm <- proc.time()
 green <- read.csv("./data/green_tripdata_2020-06.csv")
@@ -24,196 +31,410 @@ cat('there are', nrow(green), 'rows and there are',ncol(green),'columns')
 ```
 
 
+## Data exploratory
+
+# Density distribution of the trip distance
 ```{r}
-
-#Plot a histogram of the number of the trip distance ("Trip Distance").
-ggplot(green, aes(x=trip_distance)) + 
-  geom_histogram(aes(y=..density..), binwidth=.5, colour="black", fill="white") +
-  geom_density(alpha=.2, fill="#FF6666")
-
-
-```
-
-```{r}
-
-#the graph doesn't help much in infering information of the trip distance
-
 ggplot(green, aes(x=trip_distance)) + 
   geom_histogram(aes(y=..density..), binwidth=.1, colour="black", fill="white") +
-  geom_density(alpha=.2, fill="#FF6666") +  xlim(0, 15)
-
-#limiting the x-axis gives us better information about the distribution of trip distance
-#the trip distance has a right skewed distribution (positive skewed distribution) with mean trip distance of
-#2.93 miles and median of 2 miles
+  geom_density(alpha=.2, colour="blue", fill="#000066")+  xlim(0, 15)
 
 ```
 
+
+First 3 lines of the data. 
 ```{r}
-#Report mean and median trip distance grouped by hour of day
+head(green, 3)
+```
+Last 3 lines of the data.
+```{r}
+tail(green, 3)
+```
+
+Number of observations:
+```{r}
+nrow(green)
+```
+Number of attributes:
+```{r}
+ncol(green)
+```
+Names of the attributes:
+```{r}
+colnames(green[1,])
+```
+Column types:
+```{r}
+str(green)
+```
+Summary of the data:
+```{r}
+summary(green)
+```
+Counts of NA values in each column
+```{r}
+sapply(green, function(x) sum(is.na(x)))
+```  
+
+There are some negative values on currency columns, we need to handle them. 
+
+
+## Pre-prcessing
+### Column types
+Which columns are categoric?
+```{r}
+unique(green$VendorID)
+#unique(green$lpep_pickup_datetime)
+#unique(green$lpep_dropoff_datetime)
+unique(green$store_and_fwd_flag)
+unique(green$RatecodeID) 
+unique(green$PULocationID)
+unique(green$DOLocationID)
+#unique(green$passenger_count)
+#unique(green$trip_distance)
+#unique(green$fare_amount)
+unique(green$extra)
+unique(green$mta_tax)
+#unique(green$tip_amount)
+#unique(green$tolls_amount)
+unique(green$ehail_fee)
+unique(green$improvement_surcharge)
+#unique(green$total_amount)
+unique(green$payment_type)
+unique(green$trip_type)
+unique(green$congestion_surcharge)
+#unique(green$hours)
+```
+
+Any price/fee cannot be negative.
+```{r}
+green$fare_amount <- abs(green$fare_amount)
+green$extra <- abs(green$extra)
+green$mta_tax <- abs(green$mta_tax)
+green$tip_amount <- abs(green$tip_amount)
+green$tolls_amount <- abs(green$tolls_amount)
+green$improvement_surcharge <- abs(green$improvement_surcharge)
+green$total_amount <- abs(green$total_amount)
+green$congestion_surcharge <- abs(green$congestion_surcharge)
+
+```
+
+Convert categorical columns to factor type.
+```{r}
+
+green$VendorID <- factor(green$VendorID)
+green$store_and_fwd_flag <- factor(green$store_and_fwd_flag)
+green$RatecodeID <- factor(green$RatecodeID)
+green$PULocationID <- factor(green$PULocationID)
+green$DOLocationID <- factor(green$DOLocationID)
+green$payment_type <- factor(green$payment_type)
+green$trip_type <- factor(green$trip_type)
+
+# create 2 new cols 
+green$imp_sur_c <- as.logical(green$improvement_surcharge)
+green$con_sur_c <- as.logical(green$congestion_surcharge)
+
+# all of the values are NA
+green$ehail_fee <- NULL
+
+```
+
+
+```{r}
+#remove for missing values
+green <- green[complete.cases(green),]
+green <- green[!is.na(green$trip_type),]
+```
+
+
+```{r}
+sapply(green, function(x) sum(is.na(x)))
+```
+
+
+# Mean and median trip distance grouped by hour of day
+```{r}
 
 #extracting hour of the day from pickup datetime
 green$hours <- as.numeric(format(strptime(green$lpep_pickup_datetime, "%Y-%m-%d %H:%M:%S"),"%H"))
 
 hourly_trip_distance <- data.frame(green%>%
                                      group_by(hours)%>%
-                                     summarise(mean_trip_dist = mean(trip_distance, na.rm = TRUE),
-                                               median_trip_dist = median(trip_distance, na.rm = TRUE)))
+                                     summarise(mean_trip_dist = mean(trip_distance),
+                                               median_trip_dist = median(trip_distance)))
 
 p1 <- ggplot(hourly_trip_distance, aes(x=hours, y=mean_trip_dist)) + geom_bar(stat = "identity") 
 p2 <- ggplot(hourly_trip_distance, aes(x=hours, y=median_trip_dist)) + geom_bar(stat = "identity") 
 grid.arrange(p1, p2, ncol=1, nrow =2)
 
 
+#Long distances are usually taken in the early hours of the day 
+
+
+# Don't need to lpep_pickup_datetime and lpep_dropoff_datetime anymore
+green$lpep_dropoff_datetime <- NULL
+green$lpep_pickup_datetime <- NULL
+
 ```
 
+
 ```{r}
+
+
 #Build a derived variable for tip as a percentage of the total fare.
 green$tip_prc <- ifelse(green$tip_amount==0.00 | green$total_amount==0.00 , 0.00,
                         round(green$tip_amount/green$total_amount,4))
 green <- green[!is.na(green$tip_prc),]
-plot(green$total_amount,green$tip_amount)
 
-cat("Average tip percentage", round((sum(green$tip_amount, na.rm=T)/sum(green$total_amount,na.rm=T)),5)*100,"%")
+
+# use options!
+ggplot(green, aes(x=total_amount, y=tip_amount)) + 
+    geom_point(
+        color="black",
+        fill="#69b3a2",
+        shape=22,
+        alpha=0.3,
+        size=3,
+        stroke =2
+        ) +
+    theme_ipsum()
+
+```
+
+
+```{r}
+cat("Average tip percentage", round((sum(green$tip_amount)/sum(green$total_amount,na.rm=T)),5)*100,"%")
 hist(green$tip_prc)
-
-#Build a predictive model for tip as a percentage of the total fare. 
-#Use as much of the data as you like (or all of it). We will validate a sample.
-
 ```
 
-```{r}
-  
-#cor(green[,c(10,11,12,13,14,15,16,18,19)])
 
+```{r}
 str(green)
-green$VendorID <- factor(green$VendorID)
-green$RatecodeID <- factor(green$RatecodeID)
-green$payment_type <- factor(green$payment_type)
-green$trip_type <- factor(green$trip_type)
-green$weekday <- factor(green$weekday)
+```
+
+### Outlier Detection
+
+We created a iqr function to calculate Q1, Q3, and IQR values and find outliers of the columns.
+```{r}
+iqr <- function(A,B)
+{
+  Q1 <- quantile(B, .25)
+  Q3 <- quantile(B, .75)
+  IQR <- IQR(B)
+
+  print(paste("Min value:", Q1 - 1.5*IQR))
+  print(paste("Max value:", Q3 + 1.5*IQR))
+}
+```
+
+```{r}
+iqr(green,green$trip_distance)
+```
+
+```{r}
+iqr(green,green$fare_amount)
+```
+
+```{r}
+iqr(green,green$tip_amount)
+```
+```{r}
+iqr(green,green$tolls_amount)
+```
+```{r}
+iqr(green,green$improvement_surcharge)
+```
+```{r}
+iqr(green,green$total_amount)
+```
+
+In this dataset IQR approach did not give reasonable results. Because of that we do not use IQR outliers. 
+
+```{r}
+dbscan.outliers <- function(data, ...) {
+  require(fpc, quietly=TRUE)
+  cl <- dbscan(data, ...)
+  posOuts <- which(cl$cluster == 0)
+  list(positions = posOuts,
+       outliers = data[posOuts,],
+       dbscanResults = cl)
+  }
+
+db <- dbscan.outliers(matrix(c(green$total_amount,green$improvement_surcharge,green$tolls_amount,green$tolls_amount,green$fare_amount,green$trip_distance), ncol=6), eps = 2)
+
+db$outliers
+db$positions
+
+```
+Outliers deteceted by dbscan are deleted from the data.
+```{r}
+green <- green[-db$positions,]
+```
+
+
+```{r}
+s_size <- floor(0.75*nrow(green))
+samp <- sample(1:nrow(green), s_size)
+tr_set <- green[samp, ]
+tst_set <- green[-samp, ]
+
+model <- rpartXse(tip_prc ~ ., tr_set, se = 0.5)
+predicted <- predict(model, tst_set)
+head(predicted)
+```
+
+```{r}
+#table(tst_set$tip_prc, predicted)
 
 ```
 
 ```{r}
-################preprocessing##########
 
-#checking for missing values
-green <- green[!complete.cases(green),]
-green <- green[!is.na(green$Trip_type),]
-green <- green[!green$RateCodeID==99,]
+errorRate <- sum(predicted != tst_set$tip_prc) / nrow(tst_set)
+errorRate
+```
 
-#mahalanobis distance to find outlier
-green_out <- green[,c(10,11,12,13,14,15,16,18,19)]
-m.dist.order <- order(mahalanobis(green_out, colMeans(green_out), cov(green_out)), decreasing=TRUE)
-is.outlier   <- rep(FALSE, nrow(green_out))
-is.outlier[m.dist.order[1:2]] <- TRUE # Mark as outliers the 2 most extreme points
-col <- is.outlier + 1
-green$outlier <- col
-green <- green[green$outlier==1,]
-green$outlier<-NULL
-rm(green_out,col,is.outlier,m.dist.order)
-
-#tip amount, toll amount, total_amount being less than 0
-green <- green[!green$Tip_amount < 0,]
-green <- green[!green$Tolls_amount < 0,]
-green <- green[!green$Total_amount < 0,]
-
-#deleting data when there is fare amount but no travel time
-green <- green[!(green$time_travelled == 0 & green$Fare_amount != 0),]
-#deleting data when there is no fare amount charged but there is time travelled
-green <- green[!(green$time_travelled != 0 & green$Fare_amount == 0),]
-
-#deleting ambigious trip  distances
-green <- green[!green$Trip_distance %in% c(112.60,603.10),]
-#delete where tip amount is greater than fare amount
-green <- green[green$Tip_amount < green$Fare_amount,]
-
-#deleting the fault outliers from time travelled 
-head(green[green$time_travelled > 350,])
-green <- green[green$time_travelled < 350,]
-cat("Initial number of records are 1494926, and after cleaning there are", nrow(green),"records")
+```{r}
+tr <- tr_set
+ts <- tst_set
+s <- svm(tip_prc ~ ., tr)
+ps <- predict(s, ts)
+cm <- table(ps, ts$tip_prc)
+```
 
 
-#creating training and testing for linear model
-smp_size <- floor(0.8* nrow(green))
-set.seed(123)
-train_ind <- sample(seq_len(nrow(green)), size = smp_size)
-lm_train <- green[train_ind, ]
-lm_test <- green[-train_ind, ]
+```{r}
+train = tr_set
+test = tst_set
 
-lm_model <- lm(tip_prc ~ VendorID+RatecodeID+passenger_count+
-                 extra+tolls_amount+
-                 total_amount+payment_type+trip_type+hours+time_travelled+weekday, 
-               data = lm_train)
-
-summary(lm_model) #Adjusted R-squared:  0.6845 
-lm_model_predictions <- predict(lm_model,lm_test)
-lm_model_rmse <- sqrt(mean((lm_model_predictions-lm_test$tip_prc)^2)) 
-lm_model_rmse #0.04743373
-lm_model_mae <- mean(abs(lm_test$tip_prc-lm_model_predictions)) 
-lm_model_mae #0.02671113
-
-
-#randomForest
-#creating training and testing data sets
-rf_train<- lm_train[,c("VendorID","Store_and_fwd_flag","RateCodeID","Passenger_count",
-                       "Extra","Tolls_amount","improvement_surcharge",
-                       "Total_amount","Payment_type","Trip_type","hours",
-                       "time_travelled","weekday","tip_prc")]
-rf_test<- lm_test[,c("VendorID","Store_and_fwd_flag","RateCodeID","Passenger_count",
-                     "Extra","Tolls_amount","improvement_surcharge",
-                     "Total_amount","Payment_type","Trip_type","hours",
-                     "time_travelled","weekday","tip_prc")]
-
-
-h2o.init(
-  nthreads=-1,            ## -1: use all available threads
-  max_mem_size = "8G")    ## specify the memory size for the H2O cloud
-h2o.removeAll()
-
-rf_train.hex <- as.h2o(rf_train)
-rf_test.hex <- as.h2o(rf_test)
-
-rf1 <- h2o.randomForest(training_frame = rf_train.hex,
-                        x=1:14,y=15,                      
-                        ntrees = 200,                  
-                        score_each_iteration = T)
-summary(rf1) 
-rf_model_predictions <- predict(rf1,rf_test.hex)
-rf_model_rmse<-sqrt(mean((as.data.frame(rf_model_predictions)$predict-as.data.frame(rf_test.hex)$tip_prc)^2)) 
-rf_model_rmse #0.03210149
-rf1@model$variable_importances
-
-#Xgboost
-gbm <- h2o.gbm(training_frame = rf_train.hex,
-               x=1:14,y=15,                      
-               ntrees = 200, learn_rate = 0.2, max_depth = 8)
-
-summary(gbm) 
-gbm_model_predictions <- predict(gbm,rf_test.hex)
-gbm_model_rmse<-sqrt(mean((as.data.frame(gbm_model_predictions)$predict-as.data.frame(rf_test.hex)$tip_prc)^2)) 
-gbm_model_rmse #0.03119293
-gbm@model$variable_importances
-
-
-#Option A: Distributions
-green$speed <- ifelse(green$Trip_distance==0.00 | green$time_travelled==0.00 ,0.00,
-                      round((green$Trip_distance/green$time_travelled)*60,4))
-
-green$day <- as.numeric(format(strptime(green$lpep_pickup_datetime, "%Y-%m-%d %H:%M:%S"),"%d"))
-green$week_num <- ifelse(green$day <=7,1,
-                         ifelse(green$day <= 14,2,
-                                ifelse(green$day <=21,3,4)))
-#labour day on 5th september
-
-data.frame(green%>%group_by(week_num)%>%
-             summarise(average_speed = mean(speed)))
-
-speed_time <- data.frame(green%>%group_by(hours)%>%
-                           summarise(average_speed = mean(speed)))
-
-ggplot(data=speed_time, aes(x=hours,y=average_speed))+ geom_line()+
-  scale_x_continuous(breaks = seq(0,23,2))
-
+model_reg = svm(tip_prc~., data=train)
+print(model_reg)
 
 ```
+
+```{r}
+pred = predict(model_reg, test)
+ 
+x = 1:length(test$tip_prc)
+plot(x, test$tip_prc, pch=18, col="red")
+lines(x, pred, lwd="1", col="blue")
+
+```
+
+```{r}
+
+mse = mse(test$tip_prc, pred)
+mae = mae(test$tip_prc, pred)
+rmse = rmse(test$tip_prc, pred)
+r2 = R2(test$tip_prc, pred, form = "traditional")
+ 
+cat(" MAE:", mae, "\n", "MSE:", mse, "\n", 
+     "RMSE:", rmse, "\n", "R-squared:", r2)
+```
+
+```{r}
+head(test$tip_prc, n=5)
+head(pred, n=5)
+```
+
+```{r}
+
+tr <- tr_set
+ts <- tst_set
+
+tr$PULocationID <- NULL
+ts$PULocationID <- NULL
+tr$DOLocationID <- NULL
+ts$DOLocationID <- NULL
+
+nr <- nnet(tip_prc ~ ., tr,
+           linout=TRUE,
+           trace=FALSE,
+           size=6,
+           decay=0.01,
+           maxit=2000)
+psnr <- predict(nr, ts)
+mean(abs(psnr-ts$tip_prc))
+```
+
+```{r}
+plot(ts$tip_prc, psnr)
+abline(0, 1)
+```
+
+```{r}
+h2oInstance <- h2o.init(ip = "localhost") # start H2O instance locally
+
+```
+
+```{r}
+trH <- as.h2o(tr,"trH")
+tsH <- as.h2o(ts,"tsH")
+mdl <- h2o.deeplearning(x=1:18, y=19, training_frame=trH,
+hidden = c(100, 100, 100, 100, 100, 100, 100), epochs = 1000)
+preds <- as.vector(h2o.predict(mdl,tsH))
+```
+
+```{r}
+mean(abs(preds - as.vector(tsH$tip_prc)))
+```
+
+```{r}
+plot(as.vector(tsH$tip_prc), preds)
+abline(0, 1)
+```
+
+```{r}
+plot(as.vector(tsH$tip_prc), preds)
+points(as.vector(tsH$tip_prc), psnr, col = "red")
+abline(0, 1)
+```
+
+```{r}
+h2o.shutdown(prompt = F);
+```
+
+
+
+```{r}
+mars1 <- earth(
+tip_prc ~ .,
+data = tr
+)
+
+```
+```{r}
+print(mars1)
+```
+
+```{r}
+summary(mars1) %>% .$coefficients #%>% head(10)
+```
+
+```{r}
+plot(mars1, which = 1)
+```
+
+
+```{r}
+optimal_tree <- rpart(
+formula = tip_prc ~ .,
+data = tr,
+method = "anova",
+control = list(minsplit = 11, maxdepth = 8, cp = 0.01)
+)
+plotcp(optimal_tree)
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
