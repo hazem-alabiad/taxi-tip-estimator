@@ -313,7 +313,7 @@ From above, we conclude that the longest trips are at `5` & `6` in the morning. 
 ```{r}
 st <- proc.time()
 green$tip_percentage <- ifelse(green$tip_amount==0.0 | green$total_amount==0.0 , 0.0,
-                        round(green$tip_amount/green$total_amount,4))
+                        round(green$tip_amount/green$total_amount,3))
 # Remove all zero percentage as they are not going to help us in classification
 num.obs <- nrow(green)
 green <- green[green$tip_percentage > 0,]
@@ -346,51 +346,47 @@ hist(green$tip_percentage)
 ```{r}
 st <- proc.time()
 sample.size <- floor(0.75*nrow(green))
-sample <- sample(seq_len(nrow(green)), sample.size)
-train.set <- green[sample, ]
-test.set <- green[-sample, ]
+s <- sample(seq_len(nrow(green)), sample.size)
+numeic.cols <- green %>% select_if(is.numeric)
+train.set <- numeic.cols[s,]
+test.set <- numeic.cols[-s, ]
 
-model <- rpartXse(tip_percentage ~ ., train.set, se = 0.5)
-predicted <- predict(model, test.set)
+dt.model <- rpartXse(tip_percentage ~ ., train.set, se = 0.5)
+dt.predicted <- round(predict(dt.model, test.set), digits = 3)
+print(proc.time() - st, paste("\n"))
+head(dt.predicted)
+```
+## Predicted vs original tip percentage
+```{r}
+head(as.data.frame(dt.predicted) %>% cbind(test.set$tip_percentage))
+```
+## Error rate in predicting the tip percentage using Decision Tree (DT)
+```{r}
+cat("Error rate is ~ (", round(sum(dt.predicted != test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
+cat("Success rate is ~ (", round(sum(dt.predicted == test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
+```
+As we can see from above, if we accept only 3 digits after the point, which may cause some lose in data thus error, we obtained a good success rate using RT.
+//////////////////////////////////////////////////////////////////////////
+
+## Using Support Vector Machine (SVM)
+```{r}
+st <- proc.time()
+svm.model <- svm(tip_percentage ~ ., train.set)
+svm.predicted <- round(predict(svm.model, test.set), digits = 3)
 print(proc.time() - st)
-head(predicted)
 ```
-
+## Error rate in predicting the tip percentage using SVM
 ```{r}
-#table(tst_set$tip_percentage, predicted)
-
+head(as.data.frame(svm.predicted) %>% cbind(test.set$tip_percentage))
 ```
-
 ```{r}
-
-errorRate <- sum(predicted != test.set$tip_percentage) / nrow(test.set)
-errorRate
+cat("Error rate is ~ (", round(sum(svm.predicted != test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
+cat("Success rate is ~ (", round(sum(svm.predicted == test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
 ```
-
 ```{r}
-tr <- train.set
-ts <- test.set
-s <- svm(tip_percentage ~ ., tr)
-ps <- predict(s, ts)
-cm <- table(ps, ts$tip_percentage)
-```
-
-
-```{r}
-train = train.set
-test = test.set
-
-model_reg = svm(tip_percentage~., data=train)
-print(model_reg)
-
-```
-
-```{r}
-pred = predict(model_reg, test)
- 
-x = 1:length(test$tip_percentage)
-plot(x, test$tip_percentage, pch=18, col="red")
-lines(x, pred, lwd="1", col="blue")
+x <- seq_along(test.set$tip_percentage)
+plot(x, test.set$tip_percentage, pch=18, col="red")
+lines(x, svm.predicted, lwd="1", col="blue")
 
 ```
 
