@@ -1,7 +1,7 @@
 ---
 title: "cmp713-project"
-author: H. White & B. Bayrak
-date: 25/01/20213
+author: Hazem Alabiad & Betül Bayrak
+date: 25/01/2021
 output: rmarkdown::html_vignette
 ---
 # Loading Libraries
@@ -295,7 +295,7 @@ green$pickup_hour <- as.integer(format(strptime(green$lpep_pickup_datetime, "%Y-
 hourly_trip_distance <- data.frame( green %>%
                                    group_by(pickup_hour) %>%
                                    summarise(mean_trip_dist = mean(trip_distance),
-                                             median_trip_dist = median(trip_distance)))
+                                             median_trip_dist = median(trip_distance)) %>% ungroup())
 head(hourly_trip_distance)
 print(proc.time() - st)
 ```
@@ -343,105 +343,131 @@ cat("Average tip percentage of the total amount ~ (",
 hist(green$tip_percentage)
 ```
 ## Classification using Decision Tree
+### Split data into training & testing
 ```{r}
-st <- proc.time()
 sample.size <- floor(0.75*nrow(green))
 s <- sample(seq_len(nrow(green)), sample.size)
 numeic.cols <- green %>% select_if(is.numeric)
 train.set <- numeic.cols[s,]
 test.set <- numeic.cols[-s, ]
-
+```
+```{r}
 dt.model <- rpartXse(tip_percentage ~ ., train.set, se = 0.5)
 dt.predicted <- round(predict(dt.model, test.set), digits = 3)
-print(proc.time() - st, paste("\n"))
+saveRDS(file = "data/dt_model.rds", object = dt.model)
+saveRDS(file = "data/dt_pred.rds", object = dt.predicted)
 head(dt.predicted)
+print(proc.time() - st, paste("\n"))
 ```
-## Predicted vs original tip percentage
+## Load DT Model
 ```{r}
-head(as.data.frame(dt.predicted) %>% cbind(test.set$tip_percentage))
+dt.model <- readRDS("data/dt_model.rds")
+dt.predicted <- readRDS("data/dt_pred.rds")
 ```
-## Error rate in predicting the tip percentage using Decision Tree (DT)
-```{r}
-cat("Error rate is ~ (", round(sum(dt.predicted != test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
-cat("Success rate is ~ (", round(sum(dt.predicted == test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
-```
-As we can see from above, if we accept only 3 digits after the point, which may cause some lose in data thus error, we obtained a good success rate using RT.
-//////////////////////////////////////////////////////////////////////////
 
+## Predicted vs original tip percentage using `Random Forest Tree`
+```{r}
+dt.perf.matrix <- as.data.frame(test.set$tip_percentage) %>% cbind(dt.predicted)
+colnames(dt.perf.matrix) <- c("actual", "pred")
+dt.perf.matrix["error"] <- dt.perf.matrix["actual"]-dt.perf.matrix["pred"]
+dt.perf.matrix["error/actual"] <- abs(dt.perf.matrix["error"]/dt.perf.matrix["actual"])
+head(dt.perf.matrix)
+```
+## Measuring performance using Mean Absolute Percentage Error (MAPE)
+```{r}
+dt.mape <- mean(dt.perf.matrix$`error/actual`)
+cat("Error percentage: (", round(dt.mape, 4), ") \nSuccess percentage: (", round(100-dt.mape, 4),")")
+```
+```{r}
+dt.mse <- svm.mse(test.set$tip_percentage, dt.predicted)
+dt.mae <- svm.mae(test.set$tip_percentage, dt.predicted)
+dt.rmse <- svm.rmse(test.set$tip_percentage, dt.predicted)
+dt.r2 <- R2(test.set$tip_percentage, dt.predicted, form = "traditional")
+
+cat(" MAE:", dt.mae, "\n", "MSE:", dt.mse, "\n",
+    "RMSE:", dt.rmse, "\n", "R-squared:", dt.r2)
+```
+As we can see from above, if we accept only 3 digits after the point, which may cause some lose in data thus error, we obtained a very good success rate using RT.
+//////////////////////////////////////////////////////////////////////////
 ## Using Support Vector Machine (SVM)
 ```{r}
 st <- proc.time()
 svm.model <- svm(tip_percentage ~ ., train.set)
 svm.predicted <- round(predict(svm.model, test.set), digits = 3)
+saveRDS(object = svm.model, file = "data/svm_model.rds")
+saveRDS(object = svm.predicted, file = "data/svm_pred.rds")
 print(proc.time() - st)
 ```
-## Error rate in predicting the tip percentage using SVM
+## Load SVM Model
 ```{r}
-head(as.data.frame(svm.predicted) %>% cbind(test.set$tip_percentage))
-```
-```{r}
-cat("Error rate is ~ (", round(sum(svm.predicted != test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
-cat("Success rate is ~ (", round(sum(svm.predicted == test.set$tip_percentage) / nrow(test.set), digits = 3), " %)\n")
-```
-```{r}
-x <- seq_along(test.set$tip_percentage)
-plot(x, test.set$tip_percentage, pch=18, col="red")
-lines(x, svm.predicted, lwd="1", col="blue")
-
+svm.model <- readRDS("data/svm_model.rds")
+svm.predicted <- readRDS("data/svm_pred.rds")
 ```
 
+## Measuring performance using Mean Absolute Percentage Error (MAPE)
 ```{r}
+svm.perf.matrix <- as.data.frame(test.set$tip_percentage) %>% cbind(svm.predicted)
+colnames(svm.perf.matrix) <- c("actual", "pred")
+svm.perf.matrix["error"] <- svm.perf.matrix["actual"]-svm.perf.matrix["pred"]
+svm.perf.matrix["error/actual"] <- abs(svm.perf.matrix["error"]/svm.perf.matrix["actual"])
+head(svm.perf.matrix)
+```
+```{r}
+svm.mape <- mean(svm.perf.matrix$`error/actual`)
+cat("Error percentage: (", round(svm.mape, 4), ") \nSuccess percentage: (", round(100-svm.mape, 4),")")
+```
 
-mse = mse(test$tip_percentage, pred)
-mae = mae(test$tip_percentage, pred)
-rmse = rmse(test$tip_percentage, pred)
-r2 = R2(test$tip_percentage, pred, form = "traditional")
+```{r}
+svm.mse <- mse(test.set$tip_percentage, svm.predicted)
+svm.mae <- mae(test.set$tip_percentage, svm.predicted)
+svm.rmse <- rmse(test.set$tip_percentage, svm.predicted)
+svm.r2 <- R2(test.set$tip_percentage, svm.predicted, form = "traditional")
  
-cat(" MAE:", mae, "\n", "MSE:", mse, "\n", 
-     "RMSE:", rmse, "\n", "R-squared:", r2)
+cat(" MAE:", svm.mae, "\n", "MSE:", svm.mse, "\n",
+    "RMSE:", svm.rmse, "\n", "R-squared:", svm.r2)
 ```
-
+## Using Neural Network
 ```{r}
-head(test$tip_percentage, n=5)
-head(pred, n=5)
-```
-
-```{r}
-
-tr <- train.set
-ts <- test.set
-
-tr$PULocationID <- NULL
-ts$PULocationID <- NULL
-tr$DOLocationID <- NULL
-ts$DOLocationID <- NULL
-
-nr <- nnet(tip_percentage ~ ., tr,
+st <- proc.time()
+nn.model <- nnet(tip_percentage ~ ., train.set,
            linout=TRUE,
            trace=FALSE,
            size=6,
            decay=0.01,
            maxit=2000)
-psnr <- predict(nr, ts)
-mean(abs(psnr-ts$tip_percentage))
+nn.pred <- predict(nn.model, test.set)
+saveRDS(nn.model, "data/nn_model.rds")
+saveRDS(nn.pred, "data/nn_pred.rds")
+print(proc.time() - st)
+mean(abs(nn.pred$tip_percentage))
 ```
-
+## Load NN model
 ```{r}
-plot(ts$tip_percentage, psnr)
+nn.model <- readRDS("data/nn_model.rds")
+nn.pred <- readRDS("data/nn_pred.rds")
+```
+```{r}
+plot(test.set$tip_percentage, nn.pred)
 abline(0, 1)
 ```
+From the plot above, we realize that when the `tip_percentage` is larger the errors, or the residuals become larger.
+///////////////////////////////////////////////////////////////////////
 
+## Starting `H2O` Scalable platform that parallelize many machine learning algorithms
 ```{r}
-h2oInstance <- h2o.init(ip = "localhost") # start H2O instance locally
-
+system.time(h2oInstance <- h2o.init()) # start H2O instance locally
 ```
 
+## Using `H2O` build a deep neural network with the following parameters
 ```{r}
-trH <- as.h2o(tr,"trH")
-tsH <- as.h2o(ts,"tsH")
+st <- proc.time()
+trH <- as.h2o(train.set,"trH")
+test.dnn <- as.h2o(test.set,"tsH")
 mdl <- h2o.deeplearning(x=1:18, y=19, training_frame=trH,
 hidden = c(100, 100, 100, 100, 100, 100, 100), epochs = 1000)
 preds <- as.vector(h2o.predict(mdl,tsH))
+saveRDS()
+print(proc.time() - st)
 ```
 
 ```{r}
@@ -468,9 +494,7 @@ h2o.shutdown(prompt = F);
 ```{r}
 mars1 <- earth(
 tip_percentage ~ .,
-data = tr
-)
-
+data = train.set)
 ```
 ```{r}
 print(mars1)
@@ -488,7 +512,7 @@ plot(mars1, which = 1)
 ```{r}
 optimal_tree <- rpart(
 formula = tip_percentage ~ .,
-data = tr,
+data = train.set,
 method = "anova",
 control = list(minsplit = 11, maxdepth = 8, cp = 0.01)
 )
