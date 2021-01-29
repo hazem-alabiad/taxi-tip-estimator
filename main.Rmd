@@ -1,3 +1,10 @@
+---
+title: "cmp713-project"
+author: Hazem Alabiad & Betül Bayrak
+date: 25/01/2021
+output: rmarkdown::html_vignette
+---
+# Loading Libraries
 ```{r}
 library(randomForest)
 library(ggmap)
@@ -14,99 +21,146 @@ library(rpart)
 library(DMwR2)
 library(caret)
 library(Metrics)
+library(fpc)
+library(Hmisc)
+library(tibble)
+library(knitr)
 library(earth) # fit MARS models
 ```
-
+# Custom Functions
 ```{r}
-#Programmatically download and load into your favorite analytical tool the trip data for 06/2020.
-setwd('./')
-ptm <- proc.time()
-green <- read.csv("./data/green_tripdata_2020-06.csv")
-proc.time() - ptm
+`%notin%` <- Negate(`%in%`)
 
-#Report how many rows and columns of data you have loaded.
-cat('there are', nrow(green), 'rows and there are',ncol(green),'columns')
+pretty_df_print <- function (df) kable_styling(kable(df))
 
+top_least_freq_and_neg_vals <- function (col) {
+  t <- table(col) %>% as.data.frame() %>% arrange(desc(Freq))
+  non_pos <- as.data.frame(col)
+  non_pos <- non_pos[non_pos <=0, ]
+  print("Top frequent values:")
+  print.data.frame(head(t))
+  print("Least frequent values:")
+  print.data.frame(tail(t))
+  print("Negative values:")
+  print.data.frame(non_pos)
+  print("/////////////////////////////////////////////////////")
+}
 
+na_count_df <- function (df) {
+  return(as.data.frame(t(data.frame(sapply(df, function(col) sum(is.na(col)))))))
+}
+
+iqr_outliers_min_max <- function(df) {
+  iqr_df <- as.data.frame( t(data.frame(df %>% sapply(function (x) {quantile(x, c(0.25, 0.75))}))) ) %>% cbind((data.frame(df %>% sapply(IQR))))
+  colnames(iqr_df) <- c("Q1", "Q3", "IQR")
+  iqr_df$minVal <- iqr_df$Q1 - 1.5*iqr_df$IQR
+  iqr_df$maxVal <- iqr_df$Q3 + 1.5*iqr_df$IQR
+  print.data.frame(iqr_df %>% select("minVal", "maxVal"))
+}
+
+iqr_outliers_finder <- function(x){
+  Q1 <- quantile(x, 0.25)
+  Q3 <- quantile(x, 0.75)
+  IQR <- Q3 - Q1
+  Vl <- Q1 - 1.5 * IQR
+  Vr <- Q3 + 1.5 * IQR
+  return (x[which(x < Vl | x > Vr)])
+}
+
+get_freq_df_from_vector <- function (vec, col.name) {
+  freq_df <- as.data.frame(table(vec))
+  colnames(freq_df)[1] <- col.name
+  freq_df <- freq_df[order(freq_df[,1], decreasing = T),]
+  if(nrow(freq_df) <= 10) {
+    print.data.frame(freq_df)}
+  else {
+    cat("Highest values :\n")
+    print.data.frame(head(freq_df))
+    cat("Lowest values :\n")
+    print.data.frame(tail(freq_df))
+  }
+}
+
+dbscan_outliers_finder <- function(data, ...) {
+  require(fpc, quietly=TRUE)
+  cl <- dbscan(data, ...)
+  posOuts <- which(cl$cluster == 0)
+  list(positions = posOuts,
+       outliers = data[posOuts,],
+       dbscanResults = cl)
+}
+```
+# Data loading
+```{r}
+st <- proc.time()
+green <- read.csv("data/green_tripdata_2020-06.csv")
+green <- green %>% rbind(read.csv("data/green_tripdata_2020-01.csv"))
+print(proc.time() - st)
+cat('There are [', nrow(green), '] observations, and [',ncol(green),'] variables')
 ```
 
 
-## Data exploratory
-
-# Density distribution of the trip distance
+# Data exploratory & Preprocessing
+## Dataframe head
 ```{r}
-ggplot(green, aes(x=trip_distance)) + 
-  geom_histogram(aes(y=..density..), binwidth=.1, colour="black", fill="white") +
-  geom_density(alpha=.2, colour="blue", fill="#000066")+  xlim(0, 15)
-
+head(green)
 ```
-
-
-First 3 lines of the data. 
+## Dataframe tail
 ```{r}
-head(green, 3)
+tail(green)
 ```
-Last 3 lines of the data.
-```{r}
-tail(green, 3)
-```
-
-Number of observations:
-```{r}
-nrow(green)
-```
-Number of attributes:
-```{r}
-ncol(green)
-```
-Names of the attributes:
-```{r}
-colnames(green[1,])
-```
-Column types:
+## Brief info on the data
 ```{r}
 str(green)
 ```
-Summary of the data:
+## Unnecessary Variables Deletion
 ```{r}
-summary(green)
+num.vars <- ncol(green)
+green <- green %>% subset(select = -c( VendorID, store_and_fwd_flag))
+cat("[", num.vars - ncol(green) , "] variables were delete")
 ```
-Counts of NA values in each column
+## Summary of the data
 ```{r}
-sapply(green, function(x) sum(is.na(x)))
-```  
-
-There are some negative values on currency columns, we need to handle them. 
-
-
-## Pre-prcessing
-### Column types
-Which columns are categoric?
-```{r}
-unique(green$VendorID)
-#unique(green$lpep_pickup_datetime)
-#unique(green$lpep_dropoff_datetime)
-unique(green$store_and_fwd_flag)
-unique(green$RatecodeID) 
-unique(green$PULocationID)
-unique(green$DOLocationID)
-#unique(green$passenger_count)
-#unique(green$trip_distance)
-#unique(green$fare_amount)
-unique(green$extra)
-unique(green$mta_tax)
-#unique(green$tip_amount)
-#unique(green$tolls_amount)
-unique(green$ehail_fee)
-unique(green$improvement_surcharge)
-#unique(green$total_amount)
-unique(green$payment_type)
-unique(green$trip_type)
-unique(green$congestion_surcharge)
-#unique(green$hours)
+describe(green)
 ```
-
-Any price/fee cannot be negative.
+## Count NAs' in each column
+```{r}
+na_count_df(green)
+```
+## Remove NAs'
+As we can see from the output above:
+`passenger_count`, `payment_type`, `trip_type`, `congestion_surcharge` have ~ (24 K) NAs'
+`fare_amount`, `extra`, `mta_tax`,  `tip_amount`, `tolls_amount`, `improvement_surcharge`, `total_amount` have negative values.
+Negative values: we believe have been entered mistakenly as negative values so, we need to fix this problem by obtaining the absolute values.
+NAs': We need to drop rows with NAs as they critical in the classification.
+As well as, we need to remove `ehail_fee` variable as it's all NAs'.
+For `tip_amount` we realized that there are many `0` values, we need to get rid of them.
+```{r}
+green <- green %>% within(rm(ehail_fee))
+num.rows <- nrow(green)
+green <- green[!is.na(green$trip_type) & green$trip_distance != 0,]
+cat("[", num.rows - nrow(green), "] observations were deleted out of [", num.rows, "]",
+    "which means ~ (", round((num.rows - nrow(green))/num.rows, digits = 2), ")")
+```
+```{r}
+as.data.frame(t(data.frame(sapply(green, function(col) sum(is.na(col))))))
+```
+## Check top & least frequent and negative values
+```{r}
+describe(green)
+```
+## Handling `0` values
+`passenger_count` variable has some `0` which must be an input error. We can fix this issue by replacing `0` with the rounded mean of all records.
+`total_amount` variable has `0` which cannot be handled nor replaced. So, we go with deleting them.
+```{r}
+avg <- as.integer(round(mean(green$passenger_count), digits = 0))
+green$passenger_count <- ifelse(green$passenger_count != 0, green$passenger_count, avg)
+green <- green[green$total_amount > 0,]
+```
+```{r}
+str(green)
+```
+## Convert the negative values to positive by obtaining `abs`
 ```{r}
 green$fare_amount <- abs(green$fare_amount)
 green$extra <- abs(green$extra)
@@ -115,80 +169,158 @@ green$tip_amount <- abs(green$tip_amount)
 green$tolls_amount <- abs(green$tolls_amount)
 green$improvement_surcharge <- abs(green$improvement_surcharge)
 green$total_amount <- abs(green$total_amount)
-green$congestion_surcharge <- abs(green$congestion_surcharge)
-
 ```
-
-Convert categorical columns to factor type.
+## Convert categorical variables to factor type
 ```{r}
-
-green$VendorID <- factor(green$VendorID)
-green$store_and_fwd_flag <- factor(green$store_and_fwd_flag)
 green$RatecodeID <- factor(green$RatecodeID)
 green$PULocationID <- factor(green$PULocationID)
 green$DOLocationID <- factor(green$DOLocationID)
 green$payment_type <- factor(green$payment_type)
 green$trip_type <- factor(green$trip_type)
-
-# create 2 new cols 
-green$imp_sur_c <- as.logical(green$improvement_surcharge)
-green$con_sur_c <- as.logical(green$congestion_surcharge)
-
-# all of the values are NA
-green$ehail_fee <- NULL
-
+```
+```{r}
+str(green)
+```
+## Detecting outliers
+### Using IQR
+After we calculate the outliers using IQR, we inspect each variable to double check and remove manually what we, as exports, believe that it is an outlier.
+```{r}
+iqr_outliers_min_max(green %>% select_if(is.numeric))
+```
+```{r}
+system.time(iqr.outliers <- green %>% select_if(is.numeric) %>% lapply(iqr_outliers_finder))
+```
+Now, let us inspect variable values
+### passenger_count
+```{r}
+get_freq_df_from_vector(iqr.outliers$passenger_count, "passenger_count")
 ```
 
-
+We can remove observations with `passenger_count > 6` as it is not logical to fit 6 or more people in a taxi.
 ```{r}
-#remove for missing values
-green <- green[complete.cases(green),]
-green <- green[!is.na(green$trip_type),]
+num.obs <- nrow(green)
+green <- green[green$passenger_count <= 6, ]
+cat("[", num.obs-nrow(green), "] Observation have been deleted! Which is ~ (", round((num.obs-nrow(green))/num.obs, digits = 2), ")")
+```
+### trip_distance
+```{r}
+get_freq_df_from_vector(iqr.outliers$trip_distance, "trip_distance")
+```
+1. Drop the row with `trip_distance == 134121.5`
+2. Take the absolute value of the negative ones
+```{r}
+green$trip_distance <- abs(green$trip_distance)
+green <- green[green$trip_distance < 150, ]
+
+num.obs <- nrow(green)
+cat("[", num.obs-nrow(green), "] Observation have been deleted! Which is ~ (", round((num.obs-nrow(green))/num.obs, digits = 3), ")")
+```
+### `fare_amount`
+```{r}
+get_freq_df_from_vector(iqr.outliers$fare_amount, "fare_amount")
+```
+`753` is an outlier as the trip distance is only `7.49` => drop
+`335.5` is an outlier as the trip distance is only `6.97` => drop
+Others seem to be accepted
+```{r}
+green <- green[green$fare_amount %notin% c(753, 335.5),]
+
+num.obs <- nrow(green)
+cat("[", num.obs-nrow(green), "] Observation have been deleted! Which is ~ (", round((num.obs-nrow(green))/num.obs, digits = 3), ")")
+```
+### `extra`
+```{r}
+get_freq_df_from_vector(iqr.outliers$extra, "extra")
+```
+### `mta_tax`
+```{r}
+get_freq_df_from_vector(iqr.outliers$mta_tax, "mta_tax")
+```
+### `tip_amount`
+```{r}
+get_freq_df_from_vector(iqr.outliers$tip_amount, "tip_amount")
+```
+We remove observations with `tip_amount > 0.7 of the `total_amount`
+```{r}
+green <- green[(green$tip_amount/green$total_amount) <= 0.7,]
+
+num.obs <- nrow(green)
+cat("[", num.obs-nrow(green), "] Observation have been deleted! Which is ~ (", round((num.obs-nrow(green))/num.obs, digits = 3), ")")
+```
+### `tolls_amount`
+```{r}
+get_freq_df_from_vector(iqr.outliers$tolls_amount, "tolls_amount")
 ```
 
-
+`96.12`, `48.88`, `35.0` and all values with percentage 0.9 or higher of the `total_amount` are outliers to be removed.
 ```{r}
-sapply(green, function(x) sum(is.na(x)))
+green <- green[green$tolls_amount/green$total_amount < 0.5, ]
+
+num.obs <- nrow(green)
+cat("[", num.obs-nrow(green), "] Observation have been deleted! Which is ~ (", round((num.obs-nrow(green))/num.obs, digits = 3), ")")
+```
+### `improvement_surcharge`
+```{r}
+get_freq_df_from_vector(iqr.outliers$improvement_surcharge, "improvement_surcharge")
+```
+### `total_amount`
+```{r}
+get_freq_df_from_vector(iqr.outliers$total_amount, "total_amount")
+```
+### `congestion_surcharge`
+```{r}
+get_freq_df_from_vector(iqr.outliers$congestion_surcharge, "congestion_surcharge")
+```
+## Save valid data "after dropping outliers"
+```{r}
+system.time(saveRDS(green, file = "data/valid_data.rds"))
+```
+## Load valid data
+```{r}
+system.time(green <- readRDS("data/valid_data.rds"))
 ```
 
-
-# Mean and median trip distance grouped by hour of day
+## Density distribution of  `trip_distance`
 ```{r}
-
-#extracting hour of the day from pickup datetime
-green$hours <- as.numeric(format(strptime(green$lpep_pickup_datetime, "%Y-%m-%d %H:%M:%S"),"%H"))
-
-hourly_trip_distance <- data.frame(green%>%
-                                     group_by(hours)%>%
-                                     summarise(mean_trip_dist = mean(trip_distance),
-                                               median_trip_dist = median(trip_distance)))
-
-p1 <- ggplot(hourly_trip_distance, aes(x=hours, y=mean_trip_dist)) + geom_bar(stat = "identity") 
-p2 <- ggplot(hourly_trip_distance, aes(x=hours, y=median_trip_dist)) + geom_bar(stat = "identity") 
-grid.arrange(p1, p2, ncol=1, nrow =2)
-
-
-#Long distances are usually taken in the early hours of the day 
-
-
-# Don't need to lpep_pickup_datetime and lpep_dropoff_datetime anymore
-green$lpep_dropoff_datetime <- NULL
-green$lpep_pickup_datetime <- NULL
-
+ggplot(green, aes(x=trip_distance)) +
+        geom_histogram(aes(y=..density..), binwidth=.1, colour="black", fill="white") +
+        geom_density(alpha=.2, colour="blue", fill="#000066")+  xlim(0, 15)
 ```
 
-
+# Classification
+## Add `mean` and `median` of `trip_distance` grouped `hour` of pickup time
 ```{r}
+st <- proc.time()
+green$pickup_hour <- as.integer(format(strptime(green$lpep_pickup_datetime, "%Y-%m-%d %H:%M:%S"),"%H"))
+hourly_trip_distance <- data.frame( green %>%
+                                   group_by(pickup_hour) %>%
+                                   summarise(mean_trip_dist = mean(trip_distance),
+                                             median_trip_dist = median(trip_distance)) %>% ungroup())
+head(hourly_trip_distance)
+print(proc.time() - st)
+```
+```{r}
+# Mean trip distance plot
+m.trip.dist.plt <- ggplot(hourly_trip_distance, aes(x=pickup_hour, y=mean_trip_dist)) + geom_bar(stat = "identity")
+# Median trip distance plot
+M.trip.dist.plt <- ggplot(hourly_trip_distance, aes(x=pickup_hour, y=median_trip_dist)) + geom_bar(stat = "identity")
+grid.arrange(m.trip.dist.plt, M.trip.dist.plt, ncol=1, nrow =2)
+```
+From above, we conclude that the longest trips are at `5` & `6` in the morning. In rest of the day's hours trips are somehow close in terms of distance traveled.
+//////////////////////////////////////////////////////////////////////////
 
+## `tip_percentage` is the tip percentage based on `total_amount` 
+```{r}
+st <- proc.time()
+green$tip_percentage <- ifelse(green$tip_amount==0.0 | green$total_amount==0.0 , 0.0,
+                        round(green$tip_amount/green$total_amount,3))
+# Remove all zero percentage as they are not going to help us in classification
+num.obs <- nrow(green)
+green <- green[green$tip_percentage > 0,]
+cat("[", num.obs-nrow(green), "] Observation have been deleted! Which is ~ (", round((num.obs-nrow(green))/num.obs, digits = 3), ")")
+print(proc.time() - st)
 
-#Build a derived variable for tip as a percentage of the total fare.
-green$tip_prc <- ifelse(green$tip_amount==0.00 | green$total_amount==0.00 , 0.00,
-                        round(green$tip_amount/green$total_amount,4))
-green <- green[!is.na(green$tip_prc),]
-
-
-# use options!
-ggplot(green, aes(x=total_amount, y=tip_amount)) + 
+ggplot(green, aes(x=total_amount, y=tip_amount)) +
     geom_point(
         color="black",
         fill="#69b3a2",
@@ -198,195 +330,158 @@ ggplot(green, aes(x=total_amount, y=tip_amount)) +
         stroke =2
         ) +
     theme_ipsum()
-
 ```
-
+`geom_point` is useful when we want to compare two continuous variables.
+//////////////////////////////////////////////////////////////////////////
 
 ```{r}
-cat("Average tip percentage", round((sum(green$tip_amount)/sum(green$total_amount,na.rm=T)),5)*100,"%")
-hist(green$tip_prc)
+cat("Average tip percentage of the total amount ~ (",
+    round((sum(green$tip_amount)/sum(green$total_amount)),4)*100 ," %)")
 ```
-
-
+## Histogram of `tip_percentage`
 ```{r}
-str(green)
+hist(green$tip_percentage)
 ```
-
-### Outlier Detection
-
-We created a iqr function to calculate Q1, Q3, and IQR values and find outliers of the columns.
+## Classification using Decision Tree
+### Split data into training & testing
 ```{r}
-iqr <- function(A,B)
-{
-  Q1 <- quantile(B, .25)
-  Q3 <- quantile(B, .75)
-  IQR <- IQR(B)
-
-  print(paste("Min value:", Q1 - 1.5*IQR))
-  print(paste("Max value:", Q3 + 1.5*IQR))
-}
-```
-
-```{r}
-iqr(green,green$trip_distance)
-```
-
-```{r}
-iqr(green,green$fare_amount)
-```
-
-```{r}
-iqr(green,green$tip_amount)
+sample.size <- floor(0.75*nrow(green))
+s <- sample(seq_len(nrow(green)), sample.size)
+numeic.cols <- green %>% select_if(is.numeric)
+train.set <- numeic.cols[s,]
+test.set <- numeic.cols[-s, ]
 ```
 ```{r}
-iqr(green,green$tolls_amount)
+dt.model <- rpartXse(tip_percentage ~ ., train.set, se = 0.5)
+dt.predicted <- round(predict(dt.model, test.set), digits = 3)
+saveRDS(file = "data/dt_model.rds", object = dt.model)
+saveRDS(file = "data/dt_pred.rds", object = dt.predicted)
+head(dt.predicted)
+print(proc.time() - st, paste("\n"))
 ```
+## Load DT Model
 ```{r}
-iqr(green,green$improvement_surcharge)
-```
-```{r}
-iqr(green,green$total_amount)
-```
-
-In this dataset IQR approach did not give reasonable results. Because of that we do not use IQR outliers. 
-
-```{r}
-dbscan.outliers <- function(data, ...) {
-  require(fpc, quietly=TRUE)
-  cl <- dbscan(data, ...)
-  posOuts <- which(cl$cluster == 0)
-  list(positions = posOuts,
-       outliers = data[posOuts,],
-       dbscanResults = cl)
-  }
-
-db <- dbscan.outliers(matrix(c(green$total_amount,green$improvement_surcharge,green$tolls_amount,green$tolls_amount,green$fare_amount,green$trip_distance), ncol=6), eps = 2)
-
-db$outliers
-db$positions
-
-```
-Outliers deteceted by dbscan are deleted from the data.
-```{r}
-green <- green[-db$positions,]
+dt.model <- readRDS("data/dt_model.rds")
+dt.predicted <- readRDS("data/dt_pred.rds")
 ```
 
-
+## Predicted vs original tip percentage using `Random Forest Tree`
 ```{r}
-s_size <- floor(0.75*nrow(green))
-samp <- sample(1:nrow(green), s_size)
-tr_set <- green[samp, ]
-tst_set <- green[-samp, ]
+dt.perf.matrix <- as.data.frame(test.set$tip_percentage) %>% cbind(dt.predicted)
+colnames(dt.perf.matrix) <- c("actual", "pred")
+dt.perf.matrix["error"] <- dt.perf.matrix["actual"]-dt.perf.matrix["pred"]
+dt.perf.matrix["error/actual"] <- abs(dt.perf.matrix["error"]/dt.perf.matrix["actual"])
+head(dt.perf.matrix)
+```
+## Measuring performance using Mean Absolute Percentage Error (MAPE)
+```{r}
+dt.mape <- mean(dt.perf.matrix$`error/actual`)
+cat("Error percentage: (", round(dt.mape, 4), ") \nSuccess percentage: (", round(100-dt.mape, 4),")")
+```
+```{r}
+dt.mse <- svm.mse(test.set$tip_percentage, dt.predicted)
+dt.mae <- svm.mae(test.set$tip_percentage, dt.predicted)
+dt.rmse <- svm.rmse(test.set$tip_percentage, dt.predicted)
+dt.r2 <- R2(test.set$tip_percentage, dt.predicted, form = "traditional")
 
-model <- rpartXse(tip_prc ~ ., tr_set, se = 0.5)
-predicted <- predict(model, tst_set)
-head(predicted)
+cat(" MAE:", dt.mae, "\n", "MSE:", dt.mse, "\n",
+    "RMSE:", dt.rmse, "\n", "R-squared:", dt.r2)
+```
+As we can see from above, if we accept only 3 digits after the point, which may cause some lose in data thus error, we obtained a very good success rate using RT.
+//////////////////////////////////////////////////////////////////////////
+## Using Support Vector Machine (SVM)
+```{r}
+st <- proc.time()
+svm.model <- svm(tip_percentage ~ ., train.set)
+svm.predicted <- round(predict(svm.model, test.set), digits = 3)
+saveRDS(object = svm.model, file = "data/svm_model.rds")
+saveRDS(object = svm.predicted, file = "data/svm_pred.rds")
+print(proc.time() - st)
+```
+## Load SVM Model
+```{r}
+svm.model <- readRDS("data/svm_model.rds")
+svm.predicted <- readRDS("data/svm_pred.rds")
 ```
 
+## Measuring performance using Mean Absolute Percentage Error (MAPE)
 ```{r}
-#table(tst_set$tip_prc, predicted)
-
+svm.perf.matrix <- as.data.frame(test.set$tip_percentage) %>% cbind(svm.predicted)
+colnames(svm.perf.matrix) <- c("actual", "pred")
+svm.perf.matrix["error"] <- svm.perf.matrix["actual"]-svm.perf.matrix["pred"]
+svm.perf.matrix["error/actual"] <- abs(svm.perf.matrix["error"]/svm.perf.matrix["actual"])
+head(svm.perf.matrix)
+```
+```{r}
+svm.mape <- mean(svm.perf.matrix$`error/actual`)
+cat("Error percentage: (", round(svm.mape, 4), ") \nSuccess percentage: (", round(100-svm.mape, 4),")")
 ```
 
 ```{r}
-
-errorRate <- sum(predicted != tst_set$tip_prc) / nrow(tst_set)
-errorRate
-```
-
-```{r}
-tr <- tr_set
-ts <- tst_set
-s <- svm(tip_prc ~ ., tr)
-ps <- predict(s, ts)
-cm <- table(ps, ts$tip_prc)
-```
-
-
-```{r}
-train = tr_set
-test = tst_set
-
-model_reg = svm(tip_prc~., data=train)
-print(model_reg)
-
-```
-
-```{r}
-pred = predict(model_reg, test)
+svm.mse <- mse(test.set$tip_percentage, svm.predicted)
+svm.mae <- mae(test.set$tip_percentage, svm.predicted)
+svm.rmse <- rmse(test.set$tip_percentage, svm.predicted)
+svm.r2 <- R2(test.set$tip_percentage, svm.predicted, form = "traditional")
  
-x = 1:length(test$tip_prc)
-plot(x, test$tip_prc, pch=18, col="red")
-lines(x, pred, lwd="1", col="blue")
-
+cat(" MAE:", svm.mae, "\n", "MSE:", svm.mse, "\n",
+    "RMSE:", svm.rmse, "\n", "R-squared:", svm.r2)
 ```
-
+## Using Neural Network
 ```{r}
-
-mse = mse(test$tip_prc, pred)
-mae = mae(test$tip_prc, pred)
-rmse = rmse(test$tip_prc, pred)
-r2 = R2(test$tip_prc, pred, form = "traditional")
- 
-cat(" MAE:", mae, "\n", "MSE:", mse, "\n", 
-     "RMSE:", rmse, "\n", "R-squared:", r2)
-```
-
-```{r}
-head(test$tip_prc, n=5)
-head(pred, n=5)
-```
-
-```{r}
-
-tr <- tr_set
-ts <- tst_set
-
-tr$PULocationID <- NULL
-ts$PULocationID <- NULL
-tr$DOLocationID <- NULL
-ts$DOLocationID <- NULL
-
-nr <- nnet(tip_prc ~ ., tr,
+st <- proc.time()
+nn.model <- nnet(tip_percentage ~ ., train.set,
            linout=TRUE,
            trace=FALSE,
            size=6,
            decay=0.01,
            maxit=2000)
-psnr <- predict(nr, ts)
-mean(abs(psnr-ts$tip_prc))
+nn.pred <- predict(nn.model, test.set)
+saveRDS(nn.model, "data/nn_model.rds")
+saveRDS(nn.pred, "data/nn_pred.rds")
+print(proc.time() - st)
+mean(abs(nn.pred$tip_percentage))
 ```
-
+## Load NN model
 ```{r}
-plot(ts$tip_prc, psnr)
+nn.model <- readRDS("data/nn_model.rds")
+nn.pred <- readRDS("data/nn_pred.rds")
+```
+```{r}
+plot(test.set$tip_percentage, nn.pred)
 abline(0, 1)
 ```
+From the plot above, we realize that when the `tip_percentage` is larger the errors, or the residuals become larger.
+///////////////////////////////////////////////////////////////////////
 
+## Starting `H2O` Scalable platform that parallelize many machine learning algorithms
 ```{r}
-h2oInstance <- h2o.init(ip = "localhost") # start H2O instance locally
-
+system.time(h2oInstance <- h2o.init()) # start H2O instance locally
 ```
 
+## Using `H2O` build a deep neural network with the following parameters
 ```{r}
-trH <- as.h2o(tr,"trH")
-tsH <- as.h2o(ts,"tsH")
+st <- proc.time()
+trH <- as.h2o(train.set,"trH")
+test.dnn <- as.h2o(test.set,"tsH")
 mdl <- h2o.deeplearning(x=1:18, y=19, training_frame=trH,
 hidden = c(100, 100, 100, 100, 100, 100, 100), epochs = 1000)
 preds <- as.vector(h2o.predict(mdl,tsH))
+saveRDS()
+print(proc.time() - st)
 ```
 
 ```{r}
-mean(abs(preds - as.vector(tsH$tip_prc)))
+mean(abs(preds - as.vector(tsH$tip_percentage)))
 ```
 
 ```{r}
-plot(as.vector(tsH$tip_prc), preds)
+plot(as.vector(tsH$tip_percentage), preds)
 abline(0, 1)
 ```
 
 ```{r}
-plot(as.vector(tsH$tip_prc), preds)
-points(as.vector(tsH$tip_prc), psnr, col = "red")
+plot(as.vector(tsH$tip_percentage), preds)
+points(as.vector(tsH$tip_percentage), psnr, col = "red")
 abline(0, 1)
 ```
 
@@ -398,10 +493,8 @@ h2o.shutdown(prompt = F);
 
 ```{r}
 mars1 <- earth(
-tip_prc ~ .,
-data = tr
-)
-
+tip_percentage ~ .,
+data = train.set)
 ```
 ```{r}
 print(mars1)
@@ -418,23 +511,10 @@ plot(mars1, which = 1)
 
 ```{r}
 optimal_tree <- rpart(
-formula = tip_prc ~ .,
-data = tr,
+formula = tip_percentage ~ .,
+data = train.set,
 method = "anova",
 control = list(minsplit = 11, maxdepth = 8, cp = 0.01)
 )
 plotcp(optimal_tree)
 ```
-
-```{r}
-```
-
-```{r}
-```
-
-```{r}
-```
-
-```{r}
-```
-
