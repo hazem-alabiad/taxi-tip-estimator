@@ -4,6 +4,15 @@ author: Hazem Alabiad & Betül Bayrak
 date: 25/01/2021
 output: rmarkdown::html_vignette
 ---
+
+# Introduction
+Tipping someone is a common thing in our community, especially if this person is a taxi driver, waiter, or delivery officer; The tip amount varies depending on many conditions; In the case of a taxi driver, it might depend on the passenger count, trip distance, trip hour, et cetera.
+In this project, we aim to study and predict the tip percentage of the total amount paid to taxi drivers. We used the data provided by NYC Taxi & Limousine Commission (TLC) from this [link](https://www1.nyc.gov/site/tlc/about/tlc-trip-record-data.page).
+First, we explore our data to know what our data looks like, find potential outliers, obtain general and basic statistics, for instance, observations count, variables count, NAs' count, et cetera.
+Second, we apply what is called data pre-processing and data engineering that include removing unnecessary or NAs' rows, columns, convert the data type to a more suitable one and introducing new variables to get our data ready to be fed our model that is going to predict the tip amount given other variables.
+Third, we build our models that utilize the pre-processed, clean data to predict a variable "tip percentage in our case".
+Lastly, we measure the performance or accuracy of our model using many approaches and mathematical formulas and plot the predictions vs. actual tip percentage to decide on which model did the best.
+
 # Loading Libraries
 ```{r}
 library(randomForest)
@@ -26,6 +35,7 @@ library(Hmisc)
 library(tibble)
 library(knitr)
 library(earth) # fit MARS models
+extrafont::loadfonts(device="win")
 ```
 # Custom Functions
 ```{r}
@@ -518,3 +528,6 @@ control = list(minsplit = 11, maxdepth = 8, cp = 0.01)
 )
 plotcp(optimal_tree)
 ```
+
+# Conclusion
+We conclude that data is the chief factor that levels up the model's accuracy so, we first need to be aware of the data and understand it as much as possible. After that, we build the regression model using many available ones such as SVM, Decision Tree, and DNN to predict the tip percentage of the total paid amount given other variables. All the used models gave us similar accuracies of ~ 0.99 that indicates successful training using the provided data.
