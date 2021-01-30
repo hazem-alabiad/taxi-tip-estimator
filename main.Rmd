@@ -34,8 +34,8 @@ library(fpc)
 library(Hmisc)
 library(tibble)
 library(knitr)
+library(MLmetrics)
 library(earth) # fit MARS models
-extrafont::loadfonts(device="win")
 ```
 # Custom Functions
 ```{r}
@@ -389,9 +389,9 @@ dt.mape <- mean(dt.perf.matrix$`error/actual`)
 cat("Error percentage: (", round(dt.mape, 4), ") \nSuccess percentage: (", round(100-dt.mape, 4),")")
 ```
 ```{r}
-dt.mse <- svm.mse(test.set$tip_percentage, dt.predicted)
-dt.mae <- svm.mae(test.set$tip_percentage, dt.predicted)
-dt.rmse <- svm.rmse(test.set$tip_percentage, dt.predicted)
+dt.mse <- mse(test.set$tip_percentage, dt.predicted)
+dt.mae <- mae(test.set$tip_percentage, dt.predicted)
+dt.rmse <- rmse(test.set$tip_percentage, dt.predicted)
 dt.r2 <- R2(test.set$tip_percentage, dt.predicted, form = "traditional")
 
 cat(" MAE:", dt.mae, "\n", "MSE:", dt.mse, "\n",
@@ -449,7 +449,6 @@ nn.pred <- predict(nn.model, test.set)
 saveRDS(nn.model, "data/nn_model.rds")
 saveRDS(nn.pred, "data/nn_pred.rds")
 print(proc.time() - st)
-mean(abs(nn.pred$tip_percentage))
 ```
 ## Load NN model
 ```{r}
@@ -472,11 +471,9 @@ system.time(h2oInstance <- h2o.init()) # start H2O instance locally
 ```{r}
 st <- proc.time()
 trH <- as.h2o(train.set,"trH")
-test.dnn <- as.h2o(test.set,"tsH")
-mdl <- h2o.deeplearning(x=1:18, y=19, training_frame=trH,
-hidden = c(100, 100, 100, 100, 100, 100, 100), epochs = 1000)
+tsH <- as.h2o(test.set,"tsH")
+mdl <- h2o.deeplearning(x=1:11, y=12, training_frame=trH,hidden = c(100, 100, 100, 100, 100, 100, 100), epochs = 1000)
 preds <- as.vector(h2o.predict(mdl,tsH))
-saveRDS()
 print(proc.time() - st)
 ```
 
@@ -491,7 +488,7 @@ abline(0, 1)
 
 ```{r}
 plot(as.vector(tsH$tip_percentage), preds)
-points(as.vector(tsH$tip_percentage), psnr, col = "red")
+points(as.vector(tsH$tip_percentage), preds, col = "red")
 abline(0, 1)
 ```
 
